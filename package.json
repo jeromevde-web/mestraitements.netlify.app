@@ -1,0 +1,9 @@
+{
+  "name": "mestraitements",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "@netlify/blobs": "^7.0.0"
+  }
+}

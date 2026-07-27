@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MesTraitements — Rappels de médicaments</title>
+<meta name="description" content="Ne ratez plus jamais une prise. Rappels, suivi de stock et historique partageable avec votre médecin.">
+
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#1E4A38">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MesTraitements">
+<link rel="icon" href="./icons/icon-192.png">
+
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div id="onboarding" class="hidden"></div>
+
+<div id="app" class="hidden">
+  <header class="app-header">
+    <div class="app-eyebrow">● Suivi traitement</div>
+    <div class="app-title" id="header-title">Aujourd'hui</div>
+  </header>
+  <main id="main-content"></main>
+  <nav class="bottomnav">
+    <button class="navitem" data-tab="today">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      Aujourd'hui
+    </button>
+    <button class="navitem" data-tab="treatments">
+      <svg viewBox="0 0 24 24" fill="none"><rect x="7" y="3" width="10" height="18" rx="5" stroke="currentColor" stroke-width="2"/></svg>
+      Traitements
+    </button>
+    <button class="navitem" data-tab="history">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M4 19V9M12 19V5M20 19v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      Historique
+    </button>
+  </nav>
+</div>
+
+<div id="sheet-root"></div>
+<div id="toast-root"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>

@@ -105,8 +105,8 @@ function showToast(msg, type = "error") {
 
 // ---------- Rendering ----------
 function render() {
-  document.getElementById("header-title").textContent =
-    currentTab === "today" ? "Aujourd'hui" : currentTab === "treatments" ? "Mes traitements" : "Historique";
+  const titles = { today: "Aujourd'hui", treatments: "Mes traitements", history: "Historique", stats: "Statistiques" };
+  document.getElementById("header-title").textContent = titles[currentTab] || "Aujourd'hui";
 
   document.querySelectorAll(".navitem").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === currentTab);
@@ -115,9 +115,28 @@ function render() {
   const main = document.getElementById("main-content");
   if (currentTab === "today") main.innerHTML = renderToday();
   else if (currentTab === "treatments") main.innerHTML = renderTreatments();
+  else if (currentTab === "stats") main.innerHTML = renderStats();
   else main.innerHTML = renderHistory();
 
   attachContentListeners();
+}
+
+const MISSED_GRACE_MINUTES = 30;
+
+function timeToMinutes(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+function minutesNow() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+function doseVisualState(status, time) {
+  if (status === "pris") return "done";
+  const diff = minutesNow() - timeToMinutes(time);
+  if (diff < 0) return "upcoming";
+  if (diff <= MISSED_GRACE_MINUTES) return "soon";
+  return "missed";
 }
 
 function renderToday() {
@@ -137,32 +156,57 @@ function renderToday() {
   const lowStock = state.treatments.filter((t) => t.stock <= t.alertThreshold);
   const streak = computeStreak();
   const nowT = timeNow();
+  const pct = doses.length > 0 ? Math.round((takenCount / doses.length) * 100) : 0;
+  const nextDose = doses.find((d) => d.status !== "pris" && timeToMinutes(d.time) >= minutesNow());
 
   let html = `<div class="row" style="margin-bottom:16px;">
       <div class="daylabel">${dayLabel(key)}</div>
       ${streak > 0 ? `<div class="streak">✦ ${streak} jour${streak > 1 ? "s" : ""} sans oubli</div>` : ""}
-    </div>
+    </div>`;
+
+  // Dashboard stats
+  html += `
+    <div class="dashboard-grid">
+      <div class="dash-stat">
+        <div class="dash-value">${takenCount}/${doses.length}</div>
+        <div class="dash-label">Prises aujourd'hui</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-value">${pct}%</div>
+        <div class="dash-label">Réalisé</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-value">${nextDose ? nextDose.time : "—"}</div>
+        <div class="dash-label">${nextDose ? "Prochaine prise" : "Journée terminée"}</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-value">${state.treatments.length}</div>
+        <div class="dash-label">Traitement${state.treatments.length > 1 ? "s" : ""} actif${state.treatments.length > 1 ? "s" : ""}</div>
+      </div>
+    </div>`;
+
+  html += `
     <div class="progress">
-      ${doses.map((d) => `<div class="dot ${d.status === "pris" ? "done" : d.status === "manque" ? "missed" : ""}"></div>`).join("")}
-    </div>
-    <div class="count"><b>${takenCount}</b> / ${doses.length} prises aujourd'hui</div>`;
+      ${doses.map((d) => `<div class="dot dot-${doseVisualState(d.status, d.time)}"></div>`).join("")}
+    </div>`;
 
   if (lowStock.length > 0) {
     html += `<div class="banner">⚠️<div class="banner-text">Stock bas pour ${escapeHtml(lowStock.map((t) => t.name).join(", "))}. Pense à renouveler.</div></div>`;
   }
 
   doses.forEach((d) => {
-    const missed = d.status === "attente" && d.time <= nowT;
+    const vstate = doseVisualState(d.status, d.time);
+    const tagText = vstate === "soon" ? "⏳ Bientôt en retard" : vstate === "missed" ? "⚠ Non prise" : "";
     html += `
-      <div class="card ${missed ? "card-missed" : ""}">
+      <div class="card card-${vstate}">
         <div class="time">${d.time}</div>
         <div style="flex:1; min-width:0;">
           <div class="med-name">${escapeHtml(d.treatment.name)}</div>
           <div class="med-dose">${escapeHtml(d.treatment.dosage)}</div>
-          ${missed ? `<div class="missed-tag">⚠ Non prise</div>` : ""}
+          ${tagText ? `<div class="status-tag status-tag-${vstate}">${tagText}</div>` : ""}
         </div>
-        <button class="check ${d.status === "pris" ? "done" : ""} ${missed ? "check-missed" : ""}" data-action="toggle-dose" data-tid="${d.treatment.id}" data-time="${d.time}" data-status="${d.status}" aria-label="Marquer comme pris" style="color:${d.status === "pris" ? "white" : "#6B8079"}">
-          ${d.status === "pris" ? CHECK_SVG : ""}
+        <button class="check ${vstate === "done" ? "done" : ""} check-${vstate}" data-action="toggle-dose" data-tid="${d.treatment.id}" data-time="${d.time}" data-status="${d.status}" aria-label="Marquer comme pris" style="color:${vstate === "done" ? "white" : "#6B8079"}">
+          ${vstate === "done" ? CHECK_SVG : ""}
         </button>
       </div>`;
   });
@@ -186,15 +230,18 @@ function renderTreatments() {
   let html = "";
   state.treatments.forEach((t) => {
     const low = t.stock <= t.alertThreshold;
+    const ref = t.initialStock && t.initialStock > 0 ? t.initialStock : Math.max(t.stock, t.alertThreshold * 3, 1);
+    const stockPct = Math.max(0, Math.min(100, Math.round((t.stock / ref) * 100)));
     html += `
       <div class="treat-card">
         <div class="treat-top">
           <div>
-            <div class="treat-name">${escapeHtml(t.name)}</div>
+            <div class="treat-name">${escapeHtml(t.name)} ${low ? `<span class="renew-badge">Bientôt à renouveler</span>` : ""}</div>
             <div class="treat-sub">${escapeHtml(t.dosage)} · ${t.times.join(", ")}</div>
           </div>
           <button class="del-btn" data-action="delete-treatment" data-tid="${t.id}" aria-label="Supprimer">✕</button>
         </div>
+        <div class="stock-bar-track"><div class="stock-bar-fill ${low ? "low" : ""}" style="width:${stockPct}%"></div></div>
         <div class="stockrow">
           <div class="stocktext ${low ? "low" : ""}">📦 ${t.stock} restant${t.stock > 1 ? "s" : ""}</div>
           <button class="pill-btn" data-action="open-restock" data-tid="${t.id}">Renouveler</button>
@@ -219,6 +266,104 @@ function renderTreatments() {
       </div>`;
   }
   return html;
+}
+
+function computeAdherence(days) {
+  let taken = 0;
+  let expected = 0;
+  const now = new Date();
+  for (let i = 0; i < days; i++) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    const dateKey = todayKey(d);
+    state.treatments.forEach((t) => {
+      (t.times || []).forEach((time) => {
+        expected++;
+        const logKey = `${dateKey}__${t.id}__${time}`;
+        if (state.doseLog[logKey]?.status === "pris") taken++;
+      });
+    });
+  }
+  const pct = expected > 0 ? Math.round((taken / expected) * 100) : 0;
+  return { taken, expected, missed: expected - taken, pct };
+}
+
+function computeDailyBreakdown(days) {
+  const now = new Date();
+  const out = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    const dateKey = todayKey(d);
+    let taken = 0;
+    let expected = 0;
+    state.treatments.forEach((t) => {
+      (t.times || []).forEach((time) => {
+        expected++;
+        const logKey = `${dateKey}__${t.id}__${time}`;
+        if (state.doseLog[logKey]?.status === "pris") taken++;
+      });
+    });
+    const pct = expected > 0 ? Math.round((taken / expected) * 100) : 0;
+    out.push({ dateKey, pct, label: d.toLocaleDateString("fr-FR", { weekday: "short" }).replace(".", "") });
+  }
+  return out;
+}
+
+function renderStats() {
+  if (state.treatments.length === 0) {
+    return `<p style="text-align:center; color:#4E655C; font-size:14px; padding:60px 20px;">Ajoute un traitement pour voir tes statistiques.</p>`;
+  }
+
+  const week = computeAdherence(7);
+  const month = computeAdherence(30);
+  const daily = computeDailyBreakdown(7);
+  const maxBar = 100;
+
+  return `
+    <div class="dash-stat" style="margin-bottom:14px;">
+      <div class="dash-value" style="font-size:32px;">${week.pct}%</div>
+      <div class="dash-label">Taux d'observance (7 derniers jours)</div>
+    </div>
+
+    <div class="dashboard-grid" style="margin-bottom:20px;">
+      <div class="dash-stat">
+        <div class="dash-value">${week.taken}</div>
+        <div class="dash-label">Prises cette semaine</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-value">${week.missed}</div>
+        <div class="dash-label">Oubliées cette semaine</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-value">${month.taken}</div>
+        <div class="dash-label">Prises ce mois-ci</div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-value">${month.pct}%</div>
+        <div class="dash-label">Observance sur 30 jours</div>
+      </div>
+    </div>
+
+    <p style="font-size:12px; color:#6B8079; margin-bottom:10px; font-weight:600;">7 derniers jours</p>
+    <div class="bar-chart">
+      ${daily
+        .map(
+          (d) => `
+        <div class="bar-col">
+          <div class="bar-track">
+            <div class="bar-fill" style="height:${Math.max(4, (d.pct / maxBar) * 100)}%"></div>
+          </div>
+          <div class="bar-label">${escapeHtml(d.label)}</div>
+        </div>`
+        )
+        .join("")}
+    </div>
+
+    <p style="font-size:11.5px; color:#6B8079; text-align:center; margin-top:18px; line-height:1.5;">
+      Calculé à partir des traitements actifs et des prises enregistrées dans l'app.
+    </p>
+  `;
 }
 
 function renderHistory() {
@@ -263,6 +408,7 @@ function toggleDose(treatmentId, time, currentStatus) {
 
   saveState();
   render();
+  reportDoseStatus(treatmentId, time, newStatus);
 }
 
 function deleteTreatment(id) {
@@ -274,7 +420,10 @@ function deleteTreatment(id) {
 
 function restock(id, amount) {
   const t = state.treatments.find((x) => x.id === id);
-  if (t) t.stock += amount;
+  if (t) {
+    t.stock += amount;
+    t.initialStock = t.stock; // new reference point for the progress bar
+  }
   saveState();
   render();
   closeSheet();
@@ -428,6 +577,7 @@ function openAddSheet() {
       dosage,
       times,
       stock: Number(stock),
+      initialStock: Number(stock),
       alertThreshold: Number(threshold),
     });
   });
@@ -471,6 +621,24 @@ function handleAddClick() {
 
 function openPaywallSheet() {
   const root = document.getElementById("sheet-root");
+  const features = [
+    { icon: "✅", text: "Traitements illimités", available: true },
+    { icon: "☁️", text: "Sauvegarde et synchronisation cloud", available: false },
+    { icon: "📄", text: "Export PDF de l'historique", available: false },
+    { icon: "👨‍⚕️", text: "Partage avec un proche ou un professionnel", available: false },
+    { icon: "📊", text: "Statistiques avancées et tendances", available: false },
+  ];
+  const featuresHtml = features
+    .map(
+      (f) => `
+      <div class="feature-row ${f.available ? "" : "feature-soon"}">
+        <span class="feature-icon">${f.icon}</span>
+        <span class="feature-text">${f.text}</span>
+        ${f.available ? "" : `<span class="feature-badge">Bientôt</span>`}
+      </div>`
+    )
+    .join("");
+
   root.innerHTML = `
     <div class="sheet-backdrop" data-action="close-sheet">
       <div class="sheet" onclick="event.stopPropagation()">
@@ -479,19 +647,31 @@ function openPaywallSheet() {
           <button class="back-btn" data-action="close-sheet">←</button>
           <div class="sheet-title font-display">Passer Premium</div>
         </div>
-        <p style="font-size:14px; color:#3E5951; line-height:1.5; margin-bottom:18px;">
-          La version gratuite suit jusqu'à ${CONFIG.FREE_TREATMENT_LIMIT} traitements.
-          Passe Premium pour un suivi illimité, l'export de l'historique et le partage
-          avec un aidant.
+
+        <p style="font-size:14px; color:#3E5951; line-height:1.5; margin-bottom:4px;">
+          🎉 Vous utilisez déjà les ${CONFIG.FREE_TREATMENT_LIMIT} traitements disponibles gratuitement.
         </p>
-        <div class="banner" style="margin-bottom:18px;">
-          ✨<div class="banner-text">3,99€ / mois, résiliable à tout moment depuis Stripe.</div>
+        <p style="font-size:14px; color:#3E5951; line-height:1.5; margin-bottom:18px;">
+          Passez Premium pour débloquer :
+        </p>
+
+        <div class="feature-list">${featuresHtml}</div>
+
+        <div class="price-box">
+          <div class="price-amount">3,99 €<span class="price-period">/mois</span></div>
+          <div class="price-note">Résiliable à tout moment depuis Stripe</div>
         </div>
+
         <a class="primary-btn" style="display:block; text-align:center; text-decoration:none;"
            href="${CONFIG.STRIPE_PAYMENT_LINK}" target="_blank" rel="noopener">
           Passer Premium
         </a>
         <button class="secondary-btn" data-action="close-sheet">Plus tard</button>
+
+        <p class="privacy-note">
+          🔒 Vos données restent privées. Aucune donnée médicale n'est vendue ni
+          utilisée à des fins publicitaires.
+        </p>
       </div>
     </div>`;
 }
@@ -563,12 +743,25 @@ function buildSchedule() {
   state.treatments.forEach((t) => {
     (t.times || []).forEach((time) => {
       if (!byTime[time]) byTime[time] = [];
-      byTime[time].push(t.name);
+      byTime[time].push({ id: t.id, name: t.name });
     });
   });
   return Object.keys(byTime)
     .sort()
     .map((time) => ({ time, medications: byTime[time] }));
+}
+
+async function reportDoseStatus(treatmentId, time, status) {
+  try {
+    await fetch("/.netlify/functions/report-dose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: getDeviceId(), date: todayKey(), treatmentId, time, status }),
+    });
+  } catch (e) {
+    // Best-effort: if this fails, the missed-dose follow-up may fire even
+    // though the dose was taken. Not critical, so we fail silently here.
+  }
 }
 
 async function syncPushSubscription() {
@@ -611,9 +804,9 @@ async function syncPushSubscription() {
 
 // ---------- Onboarding ----------
 const OB_SCREENS = [
-  { icon: "💊", title: "Ne ratez plus jamais une prise", text: "Ajoutez vos traitements une fois. L'app s'occupe de vous rappeler quand et de suivre votre stock." },
-  { icon: "🔔", title: "Un rappel, un geste", text: "À chaque prise, un seul tap suffit. Votre stock se met à jour tout seul, avec une alerte avant la rupture." },
-  { icon: "✨", title: "Prêt à commencer ?", text: "Essayez tout de suite avec un exemple, ou ajoutez directement votre premier vrai traitement." },
+  { icon: "💊", title: "Ne manquez plus aucun traitement", text: "Ajoutez vos traitements une fois. L'app s'occupe de vous rappeler quand et de suivre votre stock." },
+  { icon: "🔔", title: "Gérez facilement vos médicaments", text: "À chaque prise, un seul tap suffit. Votre stock se met à jour tout seul, avec une alerte avant la rupture." },
+  { icon: "🔒", title: "Vos données restent privées", text: "Tout reste stocké de façon sécurisée. Aucune donnée médicale n'est vendue ni utilisée à des fins publicitaires." },
 ];
 
 function renderOnboarding(step = 0) {

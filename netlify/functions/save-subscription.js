@@ -4,7 +4,7 @@
 // timezone and a schedule of { time: "HH:MM", medications: [names] }.
 // Keyed by a random deviceId generated client-side and kept in localStorage.
 
-const { getStore } = require("@netlify/blobs");
+const { getStore } = require("./_blobs-helper.js");
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {

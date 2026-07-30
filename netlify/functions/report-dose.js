@@ -5,7 +5,7 @@
 // can tell whether a scheduled dose was actually taken before sending a
 // "missed dose" follow-up alert.
 
-const { getStore } = require("@netlify/blobs");
+const { getStore } = require("./_blobs-helper.js");
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {

@@ -1,5 +1,5 @@
 // netlify/functions/delete-subscription.js
-const { getStore } = require("@netlify/blobs");
+const { getStore } = require("./_blobs-helper.js");
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {

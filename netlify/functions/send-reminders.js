@@ -9,7 +9,7 @@
 //     doseLog synced from the client via report-dose.js).
 
 const webpush = require("web-push");
-const { getStore } = require("@netlify/blobs");
+const { getStore } = require("./_blobs-helper.js");
 
 const MISSED_GRACE_MINUTES = 30;
 

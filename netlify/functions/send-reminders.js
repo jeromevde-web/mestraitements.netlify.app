@@ -129,6 +129,46 @@ exports.handler = async () => {
           if (result === "removed") removed++;
         }
       }
+      // 3. Low stock alerts (fire once when crossing the threshold; resets
+      // automatically after a restock brings the level back up)
+      if (Array.isArray(entry.stockInfo) && entry.stockInfo.length > 0) {
+        const notified = entry.lowStockNotified || {};
+        let notifiedChanged = false;
+        const lowNow = [];
+
+        entry.stockInfo.forEach((t) => {
+          const isLow = t.stock <= t.alertThreshold;
+          if (isLow && !notified[t.id]) {
+            lowNow.push(t.name);
+            notified[t.id] = true;
+            notifiedChanged = true;
+          } else if (!isLow && notified[t.id]) {
+            notified[t.id] = false;
+            notifiedChanged = true;
+          }
+        });
+
+        if (lowNow.length > 0) {
+          const body =
+            lowNow.length === 1
+              ? `Stock bas : ${lowNow[0]}. Pensez à renouveler.`
+              : `Stock bas : ${lowNow.join(", ")}. Pensez à renouveler.`;
+          const result = await push(store, key, entry, {
+            title: "📦 MesTraitements", body, tag: "mestraitements-stock",
+          });
+          if (result === "sent") sent++;
+          if (result === "removed") removed++;
+        }
+
+        if (notifiedChanged) {
+          entry.lowStockNotified = notified;
+          try {
+            await store.setJSON(key, entry);
+          } catch (e) {
+            console.error("Failed to persist lowStockNotified for", key, e);
+          }
+        }
+      }
     }
 
     return {

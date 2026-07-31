@@ -1,7 +1,9 @@
 // netlify/functions/save-subscription.js
 //
 // Stores (or updates) a device's push subscription together with its
-// timezone and a schedule of { time: "HH:MM", medications: [names] }.
+// timezone, a schedule of { time: "HH:MM", medications: [names] }, and
+// current stock levels per treatment. Merges into any existing entry so
+// the dose log and low-stock notification flags aren't lost.
 // Keyed by a random deviceId generated client-side and kept in localStorage.
 
 const { getStore } = require("./_blobs-helper.js");
@@ -18,7 +20,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: "Invalid JSON" };
   }
 
-  const { deviceId, subscription, timezone, schedule } = payload;
+  const { deviceId, subscription, timezone, schedule, stockInfo } = payload;
 
   if (!deviceId || !subscription || !timezone || !Array.isArray(schedule)) {
     return { statusCode: 400, body: "Missing deviceId, subscription, timezone, or schedule" };
@@ -26,10 +28,16 @@ exports.handler = async (event) => {
 
   try {
     const store = getStore("push-subscriptions");
+    const existing = (await store.get(deviceId, { type: "json" })) || {};
+
     await store.setJSON(deviceId, {
+      ...existing,
       subscription,
       timezone,
-      schedule, // e.g. [{ time: "08:00", medications: ["Doliprane 500mg"] }]
+      schedule, // e.g. [{ time: "08:00", medications: [{id, name}] }]
+      stockInfo: Array.isArray(stockInfo) ? stockInfo : existing.stockInfo || [],
+      doseLog: existing.doseLog || {},
+      lowStockNotified: existing.lowStockNotified || {},
       updatedAt: new Date().toISOString(),
     });
 

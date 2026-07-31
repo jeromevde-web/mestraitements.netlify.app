@@ -232,11 +232,24 @@ function renderTreatments() {
     const low = t.stock <= t.alertThreshold;
     const ref = t.initialStock && t.initialStock > 0 ? t.initialStock : Math.max(t.stock, t.alertThreshold * 3, 1);
     const stockPct = Math.max(0, Math.min(100, Math.round((t.stock / ref) * 100)));
+
+    let daysRemainingBadge = "";
+    if (t.endDate) {
+      const end = new Date(t.endDate + "T00:00:00");
+      const today = new Date(todayKey() + "T00:00:00");
+      const diffDays = Math.round((end - today) / (1000 * 60 * 60 * 24));
+      if (diffDays >= 0) {
+        daysRemainingBadge = `<span class="days-badge">${diffDays === 0 ? "Dernier jour" : `${diffDays} jour${diffDays > 1 ? "s" : ""} restant${diffDays > 1 ? "s" : ""}`}</span>`;
+      } else {
+        daysRemainingBadge = `<span class="days-badge days-badge-ended">Traitement terminé</span>`;
+      }
+    }
+
     html += `
       <div class="treat-card">
         <div class="treat-top">
           <div>
-            <div class="treat-name">${escapeHtml(t.name)} ${low ? `<span class="renew-badge">Bientôt à renouveler</span>` : ""}</div>
+            <div class="treat-name">${escapeHtml(t.name)} ${low ? `<span class="renew-badge">Bientôt à renouveler</span>` : ""} ${daysRemainingBadge}</div>
             <div class="treat-sub">${escapeHtml(t.dosage)} · ${t.times.join(", ")}</div>
           </div>
           <button class="del-btn" data-action="delete-treatment" data-tid="${t.id}" aria-label="Supprimer">✕</button>
@@ -377,7 +390,14 @@ function renderHistory() {
     return `<p style="text-align:center; color:#4E655C; font-size:14px; padding:60px 20px;">Pas encore d'historique.</p>`;
   }
   const nameFor = (id) => state.treatments.find((t) => t.id === id)?.name || "Traitement supprimé";
-  let html = "";
+
+  let html = `
+    <div class="print-header">
+      <h1>Historique des prises — MesTraitements</h1>
+      <p>Exporté le ${new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}</p>
+    </div>
+    <button class="pdf-export-btn no-print" data-action="export-pdf">${isPremium() ? "⬇ Exporter en PDF" : "🔒 Exporter en PDF (Premium)"}</button>
+  `;
   dates.forEach((date) => {
     html += `<div class="hist-group"><div class="hist-daylabel">${dayLabel(date)}</div><div class="hist-list">`;
     byDate[date].sort((a, b) => a.time.localeCompare(b.time)).forEach((entry) => {
@@ -440,6 +460,14 @@ function addTreatment(t) {
 }
 
 // ---------- Backup / Restore ----------
+function exportHistoryPDF() {
+  if (!isPremium()) {
+    openPaywallSheet();
+    return;
+  }
+  window.print();
+}
+
 function exportBackup() {
   const payload = {
     exportedAt: new Date().toISOString(),
@@ -540,6 +568,11 @@ function openAddSheet() {
           </label>
         </div>
 
+        <label class="field">
+          <span class="field-label">Date de fin (optionnel)</span>
+          <input class="input" type="date" id="f-enddate">
+        </label>
+
         <button class="primary-btn" id="save-treatment-btn">Enregistrer</button>
       </div>
     </div>`;
@@ -566,6 +599,7 @@ function openAddSheet() {
     const dosage = document.getElementById("f-dosage").value.trim() || "—";
     const stock = document.getElementById("f-stock").value;
     const threshold = document.getElementById("f-threshold").value || "3";
+    const endDate = document.getElementById("f-enddate").value || null;
     const times = Array.from(document.querySelectorAll("#time-inputs input")).map((i) => i.value).filter(Boolean).sort();
 
     if (!name || stock === "" || times.length === 0) {
@@ -581,6 +615,7 @@ function openAddSheet() {
       stock: Number(stock),
       initialStock: Number(stock),
       alertThreshold: Number(threshold),
+      endDate,
     });
   });
 }
@@ -625,8 +660,8 @@ function openPaywallSheet() {
   const root = document.getElementById("sheet-root");
   const features = [
     { icon: "✅", text: "Traitements illimités", available: true },
+    { icon: "📄", text: "Export PDF de l'historique", available: true },
     { icon: "☁️", text: "Sauvegarde et synchronisation cloud", available: false },
-    { icon: "📄", text: "Export PDF de l'historique", available: false },
     { icon: "👨‍⚕️", text: "Partage avec un proche ou un professionnel", available: false },
     { icon: "📊", text: "Statistiques avancées et tendances", available: false },
   ];
@@ -699,6 +734,9 @@ function attachContentListeners() {
   });
   document.querySelectorAll('[data-action="import-backup"]').forEach((btn) => {
     btn.addEventListener("click", triggerImport);
+  });
+  document.querySelectorAll('[data-action="export-pdf"]').forEach((btn) => {
+    btn.addEventListener("click", exportHistoryPDF);
   });
 }
 

@@ -409,6 +409,7 @@ function toggleDose(treatmentId, time, currentStatus) {
   saveState();
   render();
   reportDoseStatus(treatmentId, time, newStatus);
+  syncPushSubscription();
 }
 
 function deleteTreatment(id) {
@@ -427,6 +428,7 @@ function restock(id, amount) {
   saveState();
   render();
   closeSheet();
+  syncPushSubscription();
 }
 
 function addTreatment(t) {
@@ -751,6 +753,15 @@ function buildSchedule() {
     .map((time) => ({ time, medications: byTime[time] }));
 }
 
+function buildStockInfo() {
+  return state.treatments.map((t) => ({
+    id: t.id,
+    name: t.name,
+    stock: t.stock,
+    alertThreshold: t.alertThreshold,
+  }));
+}
+
 async function reportDoseStatus(treatmentId, time, status) {
   try {
     await fetch("/.netlify/functions/report-dose", {
@@ -795,7 +806,7 @@ async function syncPushSubscription() {
     await fetch("/.netlify/functions/save-subscription", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deviceId, subscription, timezone, schedule }),
+      body: JSON.stringify({ deviceId, subscription, timezone, schedule, stockInfo: buildStockInfo() }),
     });
   } catch (e) {
     console.error("Push subscription sync failed:", e);

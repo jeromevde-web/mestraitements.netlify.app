@@ -6,6 +6,7 @@
 // 4. Colle le lien généré ci-dessous.
 const CONFIG = {
   STRIPE_PAYMENT_LINK: "https://buy.stripe.com/00w28qaBE7m48dv6JR7EQ00",
+  STRIPE_PAYMENT_LINK_ANNUAL: "https://buy.stripe.com/aFa6oG5hk0XG2Tb2tB7EQ01",
   FREE_TREATMENT_LIMIT: 2,
   VAPID_PUBLIC_KEY: "BNWd5u10_VhkGVkwyQO2Ny_9fQwBdkwBuiDxrENsRCdV-HYdDsm2BB5cjk-YdLk0AgujbzxHX2OTFDKp6bFilwQ",
 };
@@ -522,6 +523,64 @@ function closeSheet() {
   document.getElementById("sheet-root").innerHTML = "";
 }
 
+// ---------- Box scanning (OCR via Tesseract.js, loaded on demand) ----------
+let tesseractLoadPromise = null;
+
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (tesseractLoadPromise) return tesseractLoadPromise;
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.onload = () => resolve(window.Tesseract);
+    script.onerror = () => reject(new Error("Impossible de charger l'outil de lecture."));
+    document.head.appendChild(script);
+  });
+  return tesseractLoadPromise;
+}
+
+// Very small heuristic: medication names on French boxes are usually the
+// largest/first meaningful line, often in capital letters. We just pick the
+// longest line made mostly of letters as a best-guess starting point — the
+// person always reviews/corrects it before saving, this is only a shortcut.
+function guessMedicationNameFromText(text) {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 3 && /[a-zA-ZÀ-ÿ]{3,}/.test(l));
+  if (lines.length === 0) return "";
+  lines.sort((a, b) => b.length - a.length);
+  return lines[0].slice(0, 60);
+}
+
+async function handleBoxScan(file) {
+  const btn = document.getElementById("scan-box-btn");
+  const hint = document.getElementById("scan-hint");
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "⏳ Lecture en cours…";
+  hint.style.display = "none";
+
+  try {
+    const Tesseract = await loadTesseract();
+    const { data } = await Tesseract.recognize(file, "fra");
+    const guess = guessMedicationNameFromText(data.text || "");
+
+    if (guess) {
+      document.getElementById("f-name").value = guess;
+      hint.textContent = "Texte détecté depuis la photo — vérifiez et corrigez si besoin.";
+    } else {
+      hint.textContent = "Aucun texte clair détecté. Remplissez le nom manuellement.";
+    }
+    hint.style.display = "block";
+  } catch (e) {
+    showToast("La lecture de la photo a échoué. Remplissez le nom manuellement.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
 function openAddSheet() {
   const root = document.getElementById("sheet-root");
   root.innerHTML = `
@@ -537,6 +596,10 @@ function openAddSheet() {
           <span class="field-label">Nom du médicament</span>
           <input class="input" id="f-name" placeholder="ex. Levothyrox 75µg">
         </label>
+
+        <button type="button" class="scan-btn" id="scan-box-btn">📷 Scanner une boîte</button>
+        <input type="file" accept="image/*" capture="environment" id="scan-box-input" style="display:none;">
+        <p class="scan-hint" id="scan-hint" style="display:none;"></p>
 
         <label class="field">
           <span class="field-label">Dosage / instructions</span>
@@ -579,6 +642,14 @@ function openAddSheet() {
 
   let currentTimes = ["08:00"];
   renderTimeInputs(currentTimes);
+
+  document.getElementById("scan-box-btn").addEventListener("click", () => {
+    document.getElementById("scan-box-input").click();
+  });
+  document.getElementById("scan-box-input").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) handleBoxScan(file);
+  });
 
   document.querySelectorAll("#freq-chips .chip").forEach((chip) => {
     chip.addEventListener("click", () => {
@@ -694,14 +765,22 @@ function openPaywallSheet() {
 
         <div class="feature-list">${featuresHtml}</div>
 
-        <div class="price-box">
-          <div class="price-amount">3,99 €<span class="price-period">/mois</span></div>
-          <div class="price-note">Résiliable à tout moment depuis Stripe</div>
+        <div class="plan-grid">
+          <button class="plan-card" data-plan="monthly" data-action="select-plan">
+            <div class="plan-name">Mensuel</div>
+            <div class="plan-amount">3,99 €<span class="plan-period">/mois</span></div>
+          </button>
+          <button class="plan-card plan-card-featured" data-plan="annual" data-action="select-plan">
+            <div class="plan-badge">⭐ Économisez 58%</div>
+            <div class="plan-name">Annuel</div>
+            <div class="plan-amount">19,99 €<span class="plan-period">/an</span></div>
+          </button>
         </div>
+        <p class="price-note" style="text-align:center; margin-bottom:16px;">Résiliable à tout moment depuis Stripe</p>
 
-        <a class="primary-btn" style="display:block; text-align:center; text-decoration:none;"
-           href="${CONFIG.STRIPE_PAYMENT_LINK}" target="_blank" rel="noopener">
-          Passer Premium
+        <a class="primary-btn" id="premium-cta-btn" style="display:block; text-align:center; text-decoration:none;"
+           href="${CONFIG.STRIPE_PAYMENT_LINK_ANNUAL}" target="_blank" rel="noopener">
+          Passer Premium — Annuel
         </a>
         <button class="secondary-btn" data-action="close-sheet">Plus tard</button>
 
@@ -711,6 +790,25 @@ function openPaywallSheet() {
         </p>
       </div>
     </div>`;
+
+  let selectedPlan = "annual";
+  document.querySelectorAll('[data-action="select-plan"]').forEach((card) => {
+    card.classList.toggle("plan-card-selected", card.dataset.plan === selectedPlan);
+    card.addEventListener("click", () => {
+      selectedPlan = card.dataset.plan;
+      document.querySelectorAll('[data-action="select-plan"]').forEach((c) =>
+        c.classList.toggle("plan-card-selected", c.dataset.plan === selectedPlan)
+      );
+      const ctaBtn = document.getElementById("premium-cta-btn");
+      if (selectedPlan === "annual") {
+        ctaBtn.href = CONFIG.STRIPE_PAYMENT_LINK_ANNUAL;
+        ctaBtn.textContent = "Passer Premium — Annuel";
+      } else {
+        ctaBtn.href = CONFIG.STRIPE_PAYMENT_LINK;
+        ctaBtn.textContent = "Passer Premium — Mensuel";
+      }
+    });
+  });
 }
 
 

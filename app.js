@@ -539,18 +539,91 @@ function loadTesseract() {
   return tesseractLoadPromise;
 }
 
-// Very small heuristic: medication names on French boxes are usually the
-// largest/first meaningful line, often in capital letters. We just pick the
-// longest line made mostly of letters as a best-guess starting point — the
-// person always reviews/corrects it before saving, this is only a shortcut.
+// Groups OCR words into approximate lines using their vertical position,
+// then ranks those lines by average character height. On medication boxes,
+// the drug name is almost always printed in the largest font on the front —
+// far more reliable than picking "the longest line of text".
+function buildLineCandidatesFromWords(words) {
+  if (!words || words.length === 0) return [];
+  const withCenter = words
+    .filter((w) => w.bbox && w.text && w.text.trim().length > 0)
+    .map((w) => ({
+      text: w.text,
+      x0: w.bbox.x0,
+      yc: (w.bbox.y0 + w.bbox.y1) / 2,
+      height: w.bbox.y1 - w.bbox.y0,
+    }))
+    .sort((a, b) => a.yc - b.yc);
+
+  const lines = [];
+  withCenter.forEach((w) => {
+    let line = lines.find((l) => Math.abs(l.yc - w.yc) < Math.max(12, l.avgHeight * 0.6));
+    if (!line) {
+      line = { words: [], yc: w.yc, avgHeight: w.height };
+      lines.push(line);
+    }
+    line.words.push(w);
+    line.yc = line.words.reduce((s, x) => s + x.yc, 0) / line.words.length;
+    line.avgHeight = line.words.reduce((s, x) => s + x.height, 0) / line.words.length;
+  });
+
+  return lines.map((l) => ({
+    text: l.words.sort((a, b) => a.x0 - b.x0).map((w) => w.text).join(" ").trim(),
+    height: l.avgHeight,
+  }));
+}
+
+function pickScanCandidates(lines, max = 4) {
+  const filtered = lines.filter((l) => {
+    const t = l.text.trim();
+    if (t.length < 3) return false;
+    const letters = (t.match(/[a-zA-ZÀ-ÿ]/g) || []).length;
+    const digits = (t.match(/[0-9]/g) || []).length;
+    return letters >= 3 && letters >= digits; // deprioritize barcodes/quantities/lot numbers
+  });
+  filtered.sort((a, b) => b.height - a.height);
+
+  const seen = new Set();
+  const result = [];
+  for (const l of filtered) {
+    const key = l.text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(l.text.slice(0, 60));
+    if (result.length >= max) break;
+  }
+  return result;
+}
+
+// Fallback used only if the OCR engine doesn't return word-level positions.
 function guessMedicationNameFromText(text) {
   const lines = text
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length >= 3 && /[a-zA-ZÀ-ÿ]{3,}/.test(l));
-  if (lines.length === 0) return "";
+  if (lines.length === 0) return [];
   lines.sort((a, b) => b.length - a.length);
-  return lines[0].slice(0, 60);
+  return [lines[0].slice(0, 60)];
+}
+
+function renderScanCandidates(candidates) {
+  const box = document.getElementById("scan-candidates");
+  if (!candidates || candidates.length <= 1) {
+    box.innerHTML = "";
+    box.style.display = "none";
+    return;
+  }
+  box.style.display = "flex";
+  box.innerHTML = candidates
+    .map((c, i) => `<button type="button" class="scan-chip ${i === 0 ? "scan-chip-active" : ""}" data-value="${escapeHtml(c)}">${escapeHtml(c)}</button>`)
+    .join("");
+  box.querySelectorAll(".scan-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      document.getElementById("f-name").value = chip.dataset.value;
+      box.querySelectorAll(".scan-chip").forEach((c) => c.classList.remove("scan-chip-active"));
+      chip.classList.add("scan-chip-active");
+    });
+  });
 }
 
 async function handleBoxScan(file) {
@@ -560,15 +633,27 @@ async function handleBoxScan(file) {
   btn.disabled = true;
   btn.textContent = "⏳ Lecture en cours…";
   hint.style.display = "none";
+  renderScanCandidates([]);
 
   try {
     const Tesseract = await loadTesseract();
     const { data } = await Tesseract.recognize(file, "fra");
-    const guess = guessMedicationNameFromText(data.text || "");
 
-    if (guess) {
-      document.getElementById("f-name").value = guess;
-      hint.textContent = "Texte détecté depuis la photo — vérifiez et corrigez si besoin.";
+    let candidates = [];
+    if (data.words && data.words.length > 0) {
+      candidates = pickScanCandidates(buildLineCandidatesFromWords(data.words));
+    }
+    if (candidates.length === 0) {
+      candidates = guessMedicationNameFromText(data.text || "");
+    }
+
+    if (candidates.length > 0) {
+      document.getElementById("f-name").value = candidates[0];
+      renderScanCandidates(candidates);
+      hint.textContent =
+        candidates.length > 1
+          ? "Texte détecté — touchez la bonne ligne ci-dessous si besoin, ou corrigez le nom."
+          : "Texte détecté depuis la photo — vérifiez et corrigez si besoin.";
     } else {
       hint.textContent = "Aucun texte clair détecté. Remplissez le nom manuellement.";
     }
@@ -579,6 +664,34 @@ async function handleBoxScan(file) {
     btn.disabled = false;
     btn.textContent = originalLabel;
   }
+}
+
+// Suggests dose times for a new treatment, prioritizing times already used
+// by other treatments (fewer separate reminders = easier to stick to),
+// falling back to sensible defaults spread through the day.
+function getSmartTimeSuggestions(count) {
+  const freq = {};
+  state.treatments.forEach((t) => (t.times || []).forEach((time) => { freq[time] = (freq[time] || 0) + 1; }));
+  const existingSorted = Object.keys(freq).sort((a, b) => freq[b] - freq[a] || a.localeCompare(b));
+
+  const defaults = ["08:00", "13:00", "20:00", "12:00", "19:00", "09:00"];
+
+  const result = [];
+  for (const t of existingSorted) {
+    if (result.length >= count) break;
+    result.push(t);
+  }
+  for (const d of defaults) {
+    if (result.length >= count) break;
+    if (!result.includes(d)) result.push(d);
+  }
+  let hour = 8;
+  while (result.length < count) {
+    const t = `${String(hour % 24).padStart(2, "0")}:00`;
+    if (!result.includes(t)) result.push(t);
+    hour += 4;
+  }
+  return result.sort().slice(0, count);
 }
 
 function openAddSheet() {
@@ -600,6 +713,7 @@ function openAddSheet() {
         <button type="button" class="scan-btn" id="scan-box-btn">📷 Scanner une boîte</button>
         <input type="file" accept="image/*" capture="environment" id="scan-box-input" style="display:none;">
         <p class="scan-hint" id="scan-hint" style="display:none;"></p>
+        <div class="scan-candidates" id="scan-candidates" style="display:none;"></div>
 
         <label class="field">
           <span class="field-label">Dosage / instructions</span>
@@ -609,14 +723,15 @@ function openAddSheet() {
         <div class="field">
           <span class="field-label">Fréquence</span>
           <div class="chip-row" id="freq-chips">
-            <button class="chip" data-times="08:00">1x / jour</button>
-            <button class="chip" data-times="08:00,20:00">2x / jour</button>
-            <button class="chip" data-times="08:00,13:00,20:00">3x / jour</button>
+            <button class="chip" data-count="1">1x / jour</button>
+            <button class="chip" data-count="2">2x / jour</button>
+            <button class="chip" data-count="3">3x / jour</button>
           </div>
         </div>
 
         <div class="field">
           <span class="field-label">Heures de prise</span>
+          <p class="smart-hint" id="smart-time-hint" style="display:none;"></p>
           <div class="time-row" id="time-inputs"></div>
         </div>
 
@@ -640,8 +755,9 @@ function openAddSheet() {
       </div>
     </div>`;
 
-  let currentTimes = ["08:00"];
+  let currentTimes = getSmartTimeSuggestions(1);
   renderTimeInputs(currentTimes);
+  updateSmartHint(1);
 
   document.getElementById("scan-box-btn").addEventListener("click", () => {
     document.getElementById("scan-box-input").click();
@@ -655,10 +771,25 @@ function openAddSheet() {
     chip.addEventListener("click", () => {
       document.querySelectorAll("#freq-chips .chip").forEach((c) => c.classList.remove("active"));
       chip.classList.add("active");
-      currentTimes = chip.dataset.times.split(",");
+      const count = Number(chip.dataset.count);
+      currentTimes = getSmartTimeSuggestions(count);
       renderTimeInputs(currentTimes);
+      updateSmartHint(count);
     });
   });
+
+  function updateSmartHint(count) {
+    const hint = document.getElementById("smart-time-hint");
+    const freq = {};
+    state.treatments.forEach((t) => (t.times || []).forEach((time) => { freq[time] = (freq[time] || 0) + 1; }));
+    const hasExisting = Object.keys(freq).length > 0;
+    if (hasExisting) {
+      hint.textContent = "💡 Suggéré pour s'aligner sur vos horaires déjà en place — moins de rappels séparés, plus simple à suivre.";
+      hint.style.display = "block";
+    } else {
+      hint.style.display = "none";
+    }
+  }
 
   function renderTimeInputs(times) {
     const wrap = document.getElementById("time-inputs");
